@@ -1,48 +1,52 @@
 import semver from 'semver';
+import chalk from 'chalk';
+import fetch from 'node-fetch';
 
 const { coerce, cmp } = semver;
 const { cyan, green } = chalk;
 const ALL = !argv._.includes('main-only');
-const downloadsByPatch = {};
-const downloadsByMinor = {};
-const downloadsByMajor = {};
+
+const downloads = { patch: {}, minor: {}, major: {} };
 let total = 0;
 
 async function getStat(pkg) {
-  const res = await fetch(`https://api.npmjs.org/versions/${ encodeURIComponent(pkg) }/last-week`);
+  const res = await fetch(`https://api.npmjs.org/versions/${encodeURIComponent(pkg)}/last-week`);
   const { downloads } = await res.json();
   return downloads;
 }
 
-const [core, pure, bundle] = await Promise.all([
-  getStat('core-js'),
-  // eslint-disable-next-line unicorn/prefer-top-level-await -- false positive
-  ALL && getStat('core-js-pure'),
-  // eslint-disable-next-line unicorn/prefer-top-level-await -- false positive
-  ALL && getStat('core-js-bundle'),
-]);
+async function fetchDownloads() {
+  const [core, pure, bundle] = await Promise.all([
+    getStat('core-js'),
+    ALL && getStat('core-js-pure'),
+    ALL && getStat('core-js-bundle'),
+  ]);
 
-for (let [patch, downloads] of Object.entries(core)) {
-  const version = coerce(patch);
-  const { major } = version;
-  const minor = `${ major }.${ version.minor }`;
-  if (ALL) downloads += (pure[patch] ?? 0) + (bundle[patch] ?? 0);
-  downloadsByPatch[patch] = downloads;
-  downloadsByMinor[minor] = (downloadsByMinor[minor] ?? 0) + downloads;
-  downloadsByMajor[major] = (downloadsByMajor[major] ?? 0) + downloads;
-  total += downloads;
+  for (const [patch, count] of Object.entries(core)) {
+    const version = coerce(patch);
+    const { major, minor } = version;
+    const totalDownloads = count + (ALL ? ((pure[patch] ?? 0) + (bundle[patch] ?? 0)) : 0);
+
+    downloads.patch[patch] = totalDownloads;
+    downloads.minor[`${major}.${minor}`] = (downloads.minor[`${major}.${minor}`] ?? 0) + totalDownloads;
+    downloads.major[major] = (downloads.major[major] ?? 0) + totalDownloads;
+    total += totalDownloads;
+  }
 }
 
-function log(kind, map) {
-  echo(green(`downloads for 7 days by ${ cyan(kind) } releases:`));
-  console.table(Object.entries(map).sort(([a], [b]) => {
-    return cmp(coerce(a), '>', coerce(b)) ? 1 : -1;
-  }).reduce((memo, [version, downloads]) => {
-    memo[version] = { downloads, '%': `${ (downloads / total * 100).toFixed(2).padStart(5) } %` };
-    return memo;
-  }, {}));
+function logDownloads(kind, data) {
+  console.log(green(`Downloads for 7 days by ${cyan(kind)} releases:`));
+  console.table(
+    Object.entries(data)
+      .sort(([a], [b]) => (cmp(coerce(a), '>', coerce(b)) ? 1 : -1))
+      .reduce((acc, [version, count]) => {
+        acc[version] = { count, '%': `${((count / total) * 100).toFixed(2)} %` };
+        return acc;
+      }, {})
+  );
 }
 
-log('patch', downloadsByPatch);
-log('minor', downloadsByMinor);
-log('major', downloadsByMajor);
+(async () => {
+  await fetchDownloads();
+  ['patch', 'minor', 'major'].forEach(kind => logDownloads(kind, downloads[kind]));
+})();
